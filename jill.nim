@@ -4,9 +4,9 @@ import jacket
 
 type JackBufferP = ptr UncheckedArray[DefaultAudioSample]
 
-macro withJack*(input: untyped, output: untyped, processAudio: untyped): untyped =
-  
-  # parse input and output port syntax into string arrays for easier code generation
+let defaultClientName = getAppFilename().lastPathPart.changeFileExt("")
+
+macro withJack*(input, output: untyped, clientName: string, body: untyped): untyped =
 
   template parsePorts(portDefinition: untyped, portType: string): seq[string] =
     case portDefinition.kind
@@ -43,9 +43,9 @@ macro withJack*(input: untyped, output: untyped, processAudio: untyped): untyped
         identPortTypeFlag = if portType=="input": PortIsInput else: PortIsOutput
  
       registerPorts.add quote do:
-        let `identPort` = `identClient`.portRegister(`portType`, JackDefaultAudioType, `identPortTypeFlag`, 0)
+        let `identPort` = `identClient`.portRegister(`portName`, JackDefaultAudioType, `identPortTypeFlag`, 0)
         if `identPort`.isNil:
-          debug "could not resgister port '$#'" % `portName`
+          debug "could not register port '$#'" % `portName`
           quit 1
 
       defineBuffers.add quote do:
@@ -57,34 +57,31 @@ macro withJack*(input: untyped, output: untyped, processAudio: untyped): untyped
     block:
       const size = sizeof(DefaultAudioSample)
       var
-        n = 64
-        log = newConsoleLogger(when defined(release): lvlInfo else: lvlDebug)
-        clientName = "comus"
-        serverName = "" 
+        clientName = `clientName`
         status: cint
-        `identClient` = clientOpen(clientName, NullOption, status.addr, serverName)
-      addHandler(log)
+        `identClient` = clientOpen(clientName, NullOption, status.addr)
 
       if `identClient`.isNil:
-        debug "jack connect failed, status: $1" % $status
+        debug "jack client open failed, status: $1" % $status
         quit 1
-      
-      proc cleanup() =
-        debug "Cleaning up..."
+      debug "client $# connected" % clientName
+
+      proc cleanup() {.cdecl.} =
+        debug "cleanup"
         if `identClient` != nil:
-            `identClient`.deactivate()
-            `identClient`.clientClose()
-            `identClient` = nil
+          `identClient`.deactivate()
+          `identClient`.clientClose()
+          `identClient` = nil
 
       proc signal(sig: cint) {.noconv.} =
-          debug "Received signal: $#" % $sig
-          cleanup()
-          quit 0
+        debug "received signal: $#" % $sig
+        cleanup()
+        quit 0
 
       proc shutdown(arg: pointer = nil) {.cdecl.} =
-          warn "JACK server has shut down."
-          cleanup()
-          quit 0
+        warn "jack server shutdown"
+        cleanup()
+        quit 0
 
       proc connectPort(portIdA: PortId; portIdB: PortId; connect: cint; arg: pointer) {.cdecl.} =
         let portA = `identClient`.portById(portIdA)
@@ -114,7 +111,7 @@ macro withJack*(input: untyped, output: untyped, processAudio: untyped): untyped
       
       proc doProcess(`identNframes`: NFrames) =
         `defineBuffers`
-        `processAudio`
+        `body`
 
       proc process(nframes: NFrames, arg: pointer): cint {.cdecl.} =
         # TODO: nim exceptions don't work in the process block
