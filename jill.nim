@@ -4,10 +4,7 @@ import jacket
 
 type JackBufferP = ptr UncheckedArray[DefaultAudioSample]
 
-let defaultClientName = getAppFilename().lastPathPart.changeFileExt("")
-
-macro withJack*(input, output: untyped, clientName: string, body: untyped): untyped =
-
+macro withJack*(input, output, clientName, body: untyped): untyped =
   template parsePorts(portDefinition: untyped, portType: string): seq[string] =
     case portDefinition.kind
     of nnkIdent:
@@ -170,4 +167,12 @@ macro withJack*(input, output: untyped, clientName: string, body: untyped): unty
 
       cleanup()
 
+template defaultClientName*(): string =
+  getAppFilename().lastPathPart.changeFileExt("")
+
+template withJack*(output, clientName, body: untyped): untyped =
+  withJack((), output, clientName, body)
+
+template withJack*(output, body: untyped): untyped =
+  withJack((), output, defaultClientName(), body)
 
