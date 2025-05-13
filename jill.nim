@@ -4,31 +4,80 @@ import jacket
 
 type JackBufferP = ptr UncheckedArray[DefaultAudioSample]
 
-macro withJack*(input: untyped, output: untyped, processBlock: untyped): untyped =
-  echo input.treeRepr
-  echo output.treeRepr
-  quote do:
+macro withJack*(input: untyped, output: untyped, processAudio: untyped): untyped =
+  
+  # parse input and output port syntax into string arrays for easier code generation
 
+  template parsePorts(portDefinition: untyped, portType: string): seq[string] =
+    case portDefinition.kind
+    of nnkIdent:
+      @[portDefinition.repr]
+    of nnkTupleConstr:
+      var portNames:seq[string]
+      for i,n in portDefinition:
+        case n.kind
+        of nnkExprColonExpr:
+          error(portType & "s my not contain a colon")
+        else:
+          portNames.add n.repr
+      portNames
+    else:
+      error(portType & " must be identifier or tuple representing names to be given to inputs")
+  
+  # Generate code blocks that contain input and output buffers from jack
+
+  let
+    identClient = ident("client")
+    identNframes = ident("nframes")
+
+  var
+    registerPorts = newStmtList()
+    defineBuffers = newStmtList()
+  for portType, portParam in {"input": input, "output": output}.items():
+    for portName in parsePorts(portParam, portType):
+      # register port and define buffer in process callback for each input or output
+ 
+      let
+        identBuffer = ident(portName)
+        identPort = ident(portName & "Port")
+        identPortTypeFlag = if portType=="input": PortIsInput else: PortIsOutput
+ 
+      registerPorts.add quote do:
+        let `identPort` = `identClient`.portRegister(`portType`, JackDefaultAudioType, `identPortTypeFlag`, 0)
+        if `identPort`.isNil:
+          debug "could not resgister port '$#'" % `portName`
+          quit 1
+
+      defineBuffers.add quote do:
+        let `identBuffer` {.inject.} = cast[JackBufferP](portGetBuffer(`identPort`, `identNframes`))
+
+  #main macro body, this is jill's main jack client implementation. Most is static code in quote do
+
+  quote do:
     block:
       const size = sizeof(DefaultAudioSample)
       var
-        inputPort, outputPort: Port
         n = 64
         log = newConsoleLogger(when defined(release): lvlInfo else: lvlDebug)
         clientName = "comus"
         serverName = "" 
         status: cint
-        client: Client
+        `identClient` = clientOpen(clientName, NullOption, status.addr, serverName)
+      addHandler(log)
+
+      if `identClient`.isNil:
+        debug "jack connect failed, status: $1" % $status
+        quit 1
       
       proc cleanup() =
         debug "Cleaning up..."
-        if client != nil:
-          client.deactivate()
-          client.clientClose()
-          client = nil
+        if `identClient` != nil:
+            `identClient`.deactivate()
+            `identClient`.clientClose()
+            `identClient` = nil
 
       proc signal(sig: cint) {.noconv.} =
-          debug "Received signal: " & $sig
+          debug "Received signal: $#" % $sig
           cleanup()
           quit 0
 
@@ -38,34 +87,39 @@ macro withJack*(input: untyped, output: untyped, processBlock: untyped): untyped
           quit 0
 
       proc connectPort(portIdA: PortId; portIdB: PortId; connect: cint; arg: pointer) {.cdecl.} =
-        let portA = client.portById(portIdA)
-        let portB = client.portById(portIdB)
-        debug if connect > 0: "connect" else: "disconnect", " port ", portA.portName, " to ", portB.portName
+        let portA = `identClient`.portById(portIdA)
+        let portB = `identClient`.portById(portIdB)
+        debug "$# port $# to $#" % [if connect > 0: "connect" else: "disconnect", $portA.portName, $portB.portName]
 
       proc registerPort(portId: PortId, flag: cint, arg: pointer) {.cdecl.} =
-        let port = client.portById(portId)
-        debug "register port ", port.portName
+        let port = `identClient`.portById(portId)
+        debug "register port $#" % $port.portName
 
       proc registerClient(name: cstring, flag: cint; arg: pointer) {.cdecl.} =
-        debug "register client ", name
+        debug "register client $#" % $name
 
       proc xrun(arg: pointer): cint {.cdecl.} =
         debug "xrun"
       
       proc renamePort(portId: PortId, oldName, newName: cstring, arg: pointer) {.cdecl.} =
-        debug "rename port ", oldName, " to ", " ", newName
+        debug "rename port $# to $#" % [$oldName, $newName]
 
       proc sampleRate(nframes: NFrames, arg: pointer): cint {.cdecl.} =
-        debug "sample rate ", nframes
+        debug "sample rate $#" % $nframes
 
       proc timebase(state: TransportState, nframes: NFrames, post: ptr Position, newPost: cint, arg: pointer) {.cdecl.} =
         debug "timebase"
 
+      `registerPorts`
+      
+      proc doProcess(`identNframes`: NFrames) =
+        `defineBuffers`
+        `processAudio`
+
       proc process(nframes: NFrames, arg: pointer): cint {.cdecl.} =
         # TODO: nim exceptions don't work in the process block
-        let inBuf {.inject.} = cast[JackBufferP](portGetBuffer(inputPort, nframes))
-        let outBuf {.inject.} = cast[JackBufferP](portGetBuffer(outputPort, nframes))
-        `processBlock`
+        var doProcessVar = cast[ptr proc (nframes: NFrames)](arg)
+        doProcessVar[](nframes)
         return 0
 
       when defined(windows):
@@ -73,63 +127,50 @@ macro withJack*(input: untyped, output: untyped, processBlock: untyped): untyped
       else:
         setSignalProc(signal, SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM)
 
-      client = clientOpen(clientName, NullOption, status.addr, serverName)
-      if client.isNil:
-        stderr.write "jack connect failed, status: $1\n" % $status
-        quit 1
-
-      client.onShutdown(shutdown)
-      if 0 != client.setProcessCallback(process, nil):
+      `identClient`.onShutdown(shutdown)
+      var doProcessVar = doProcess
+      if 0 != `identClient`.setProcessCallback(process, doProcessVar.addr):
         debug "could not set process callback"
-      if 0 != client.setClientRegistrationCallback(registerClient):
+      if 0 != `identClient`.setClientRegistrationCallback(registerClient):
         debug "could not set client registration callback"
-      if 0 != client.setPortRegistrationCallback(registerPort):
+      if 0 != `identClient`.setPortRegistrationCallback(registerPort):
         debug "could not set port registration callback"
-      if 0 != client.setXrunCallback(xrun):
+      if 0 != `identClient`.setXrunCallback(xrun):
         debug "could not set xrun callback"
-      if 0 != client.setPortRenameCallback(renamePort):
+      if 0 != `identClient`.setPortRenameCallback(renamePort):
         debug "could not set port rename callback"
-      if 0 != client.setSampleRateCallback(sampleRate):
+      if 0 != `identClient`.setSampleRateCallback(sampleRate):
         debug "could not set sample rate callback"
-      if 0 != client.setPortConnectCallback(connectPort):
+      if 0 != `identClient`.setPortConnectCallback(connectPort):
         debug "could not set port connect callback"
 
-      inputPort = client.portRegister("input", JackDefaultAudioType, PortIsInput, 0)
-      if inputPort.isNil:
-        stderr.write "could not connect input port\n"
+      if 0 != `identClient`.activate:
+        debug "could not activate"
         quit 1
 
-      outputPort = client.portRegister("output", JackDefaultAudioType, PortIsOutput, 0)
-      if outputPort.isNil:
-        stderr.write "could not connect output port\n"
-        quit 1
-
-
-      if 0 != client.activate:
-        stderr.write "Cannot activate\n"
-        quit 1
-
+      #[
       block:
-        let ports = client.getPorts(nil, nil, PortIsPhysical or PortIsOutput)
+        let ports = `identClient`.getPorts(nil, nil, PortIsPhysical or PortIsOutput)
         if ports.isNil:
-          debug "no input ports\n"
+          debug "no input ports"
           break
-        if 0 != client.connect(ports[0], inputPort.portName):
-          debug "cannot connect input ports\n"
+        if 0 != `identClient`.connect(ports[0], inputPort.portName):
+          debug "could not connect input ports"
         free(ports)
 
       block:
-        let ports = client.getPorts(nil, nil, PortIsPhysical or PortIsInput)
+        let ports = `identClient`.getPorts(nil, nil, PortIsPhysical or PortIsInput)
         if ports.isNil:
-          debug "no output ports\n"
+          debug "no output ports"
           break
-        if 0 != client.connect(outputPort.portName, ports[0]):
-          debug "cannot connect input ports\n"
+        if 0 != `identClient`.connect(outputPort.portName, ports[0]):
+          debug "could not connect input ports"
         free(ports)
-
+      ]#
 
       while true:
         sleep(high(int))
 
       cleanup()
+
 
