@@ -176,6 +176,8 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         clientName = `clientName`
         status: cint
         `identClient` = clientOpen(clientName, NullOption, status.addr)
+        sampleRate {.inject.}: NFrames
+        bufferSize {.inject.}: NFrames
 
       if `identClient`.isNil:
         debug "jack client open failed, status: $1" % $status
@@ -217,8 +219,15 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
       proc renamePort(portId: PortId, oldName, newName: cstring, arg: pointer) {.cdecl.} =
         debug "rename port $# to $#" % [$oldName, $newName]
 
-      proc sampleRate(nframes: NFrames, arg: pointer): cint {.cdecl.} =
+      proc changeSampleRate(nframes: NFrames, arg: pointer): cint {.cdecl.} =
+        var sampleRatePtr = cast[ptr NFrames](arg)
+        sampleRatePtr[] = nframes
         debug "sample rate $#" % $nframes
+      
+      proc changeBufferSize(nframes: NFrames, arg: pointer): cint {.cdecl.} =
+        var bufferSizePtr = cast[ptr NFrames](arg)
+        bufferSizePtr[] = nframes
+        debug "buffer size $#" % $nframes
 
       proc timebase(state: TransportState, nframes: NFrames, post: ptr Position, newPost: cint, arg: pointer) {.cdecl.} =
         debug "timebase"
@@ -251,8 +260,10 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         debug "could not set xrun callback"
       if 0 != `identClient`.setPortRenameCallback(renamePort):
         debug "could not set port rename callback"
-      if 0 != `identClient`.setSampleRateCallback(sampleRate):
+      if 0 != `identClient`.setSampleRateCallback(changeSampleRate, sampleRate.addr):
         debug "could not set sample rate callback"
+      if 0 != `identClient`.setSampleRateCallback(changeBufferSize, bufferSize.addr):
+        debug "could not set buffer size callback"
       if 0 != `identClient`.setPortConnectCallback(connectPort):
         debug "could not set port connect callback"
 
@@ -261,6 +272,7 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         quit 1
 
       #[
+      # defer autoconnect for now
       block:
         let ports = `identClient`.getPorts(nil, nil, PortIsPhysical or PortIsOutput)
         if ports.isNil:
@@ -285,7 +297,7 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
 
       cleanup()
 
-  echo result.repr  
+  # echo result.repr  
 
 template defaultClientName*(): string =
   getAppFilename().lastPathPart.changeFileExt("")
