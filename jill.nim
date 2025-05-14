@@ -34,8 +34,8 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
   # 
   # - register a port
   # - get that port's buffer as a pointer (expectation to write only to outputs)
-  # - define a Nim procedure with openArray[float] parameters for inputs and var
-  #   openArray[float] for outputs
+  # - define a Nim procedure with openArray[float32] parameters for inputs and var
+  #   openArray[float32] for outputs
   # - A call to that procedure passing the correct input and output buffers
   #   this happens inside the jack process callback
 
@@ -103,18 +103,21 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
       paramCall.add newIntLitNode(0)
       var infix = nnkInfix.newTree
       infix.add ident("-")
-      infix.add ident("n")
+      var intified = nnkCall.newTree
+      intified.add ident("int")
+      intified.add identNframes
+      infix.add intified
       infix.add newIntLitNode(1)
       paramCall.add infix
 
       processProcCall.add paramCall
 
-  # add openArray[float] type to input parameters
-  indef.add nnkBracketExpr.newTree(ident("openArray"), ident("float"))
+  # add openArray[float32] type to input parameters
+  indef.add nnkBracketExpr.newTree(ident("openArray"), ident("float32"))
   indef.add newEmptyNode()
 
-  # add var openArray[float] type to output parameters
-  outdef.add nnkVarTy.newTree nnkBracketExpr.newTree(ident("openArray"), ident("float"))
+  # add var openArray[float32] type to output parameters
+  outdef.add nnkVarTy.newTree nnkBracketExpr.newTree(ident("openArray"), ident("float32"))
   outdef.add newEmptyNode()
 
   # add inputs and outputs to parameters
@@ -125,7 +128,7 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
     params.add(outdef)
   
   # this results in the following procedure definition
-  # proc processImpl(input1, input2, ...: openArray[float], outpu1, output2, ...: var openArray[float])
+  # proc processImpl(input1, input2, ...: openArray[float32], outpu1, output2, ...: var openArray[float32])
   var processProcDef = nnkProcDef.newTree
   processProcDef.add identProc
   processProcDef.add newEmptyNode()
@@ -146,7 +149,7 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
     var ptrdef = nnkPtrTy.newTree
     var procdef = nnkProcTy.newTree
    
-    # copy the entire param definition input1: openArray[float]...
+    # copy the entire param definition input1: openArray[float32]...
     # for the procedure type cast
     # var processImpl = cast[ptr proc(...)](
     procdef.add params.copyNimTree
