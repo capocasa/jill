@@ -240,8 +240,8 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         setSignalProc(signal, SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM)
 
       `identClient`.onShutdown(shutdown)
-      var doProcessVar = doProcess
-      if 0 != `identClient`.setProcessCallback(process, doProcessVar.addr):
+      var processImplVar = processImpl
+      if 0 != `identClient`.setProcessCallback(process, processImplVar.addr):
         debug "could not set process callback"
       if 0 != `identClient`.setClientRegistrationCallback(registerClient):
         debug "could not set client registration callback"
