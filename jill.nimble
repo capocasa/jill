@@ -6,5 +6,5 @@ description = "Jill is a Nimish Nim interface to the Jack Audio Connection Kit."
 license = "MIT"
 
 requires "nim >= 2.0.0"
-
+requires "jacket"
 
