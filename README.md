@@ -1,7 +1,7 @@
 Jill
 ====
 
-Jill is a high-level interface to the Jack Audio Connection Kit.
+Jill is a Nimish high-level interface to the Jack Audio Connection Kit.
 
 It is built up as a single macro- `withJack` (and that's where the name comes from, because who is with jack if not Jill?). The macro encapsulates a full jack implementation, and you only provide your inputs and outputs.
 
@@ -17,17 +17,16 @@ There are also a few basic variables available- `sampleRate`, `sampleDuration` (
 Oscillator
 ----------
 
-```
+Very simple pulse oscillator at the frequency of the jack period.
+
+Be careful, it's not bandlimited, play back quietly
+
+```nim
 import jill
 
-var c = 0
-
 withJack output=(left, right):
-  c += 5 * sampleDuration
-  if c > 2000 / 48000:
-    c = 50 * sampleDuration
-  for i in 0 .. (left.len div 2) - 1:
-    left[i] = i.float32 * (1/bufferSize)
+  for i in 0..left.len:
+    left[i] = if i < left.len div 2: -0.5 else: 0.5
     right[i] = left[i]
 ```
 
@@ -36,22 +35,64 @@ Mixer
 
 This is a simple app to illustrate inputs and outputs. It mixes the signals together.
 
-withJack input=(c1, c2, c3, c4) output=out:
-  for i in bufferSize:
-    out[i] = c1[i] + c2[i] + c3[i] + c4[i]
+```nim
+import jill
+withJack input=(c1, c2, c3, c4), output=(o):
+  for i in 0..o.len:
+    o[i] = c1[i] + c2[i] + c3[i] + c4[i]
+```
 
 Echo
 ----
 
-The withjack block acts as a closure, so you can access data from before to have state. Here is a simple delay line.
+The `withJack` block acts as a closure, so you can access data from before to have state. Here is a simple delay line.
 
-var buffer = newSeq[float32](27)
+```nim
+import jill
+withJack input=sig, output=del:
+  for i in 0..sig.len:
+    del[i] = sig[i] + (if i < b.len: 0.5 * b[i] else: sig[i-b.len])
+  for i in 0..b.len-1:
+    b[i] = sig[sig.len - b.len + i]
+```
 
-withJack input=someSignal out=withEcho:
-  for i in input.len:
-    withEcho[i] = someSignal[i] + if i < buffer.len: 0.5 * buffer[i] else: someSignal[i-buffer.len]
-  for i in 0..buffer.len-1:
-    buffer[i] = someSignal[someSignal.len - buffer.len + i]
+Complete call
+-------------
+
+This does nothing, but demonstrates all the `withJack` parameters.
+
+```nim
+import jill
+withJack input=a, output=b, clientName="myJackClient", mainApp=false:
+  discard
+```
+
+Positional works too
+
+```nim
+withJack a, b, "myJackClient", false:
+  discard
+```nim
+
+- *input* is a list of float32 openArray variables that will be available in the code block as inputs
+- *output* same with outputs
+- *clientName* a string that will be jack client name, defaults to `defaultClientName()` which returns the
+  filename of the ececutable without extension. So if you run your program as `./foo.app` the client name will be `foo`.
+- *mainApp* a boolean that defauls to true. If it is set, `withJack` will set up a complete jack application including
+  a main loop that just sleeps, and handlers to quit the program if jack shuts down or a signal is received. If you
+  want your own main loop and use it as part of a larger application, you can set this to false and handle things yourself.
+
+```nim
+withJack a, b, "myJackClient", false:
+  discard
+
+# signal handler code here
+# Use `jacket` to register more jack callbacks here
+
+while true:
+  sleep(high(int))
+
+```
 
 
 Design
@@ -74,6 +115,7 @@ This first version is limited in scope on purpose. There is interest in eventual
 - Dynamically added inputs and outputs at runtime
 - Groups of inputs and outputs
 - Support for more jack callbacks
+- Mid-level API (as opposed to the `withJack` high level API), Nimish fully flexible Jack API
 - float64 support
 - MIDI
 - Multithreading
