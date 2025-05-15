@@ -94,6 +94,67 @@ while true:
 
 ```
 
+This does nothing, but demonstrates all the `withJack` parameters.
+
+```nim
+import jill
+withJack input=a, output=b, clientName="myJackClient", mainApp=false:
+  discard
+```
+
+Positional works too
+
+```nim
+withJack a, b, "myJackClient", false:
+  discard
+```nim
+
+- *input* is a list of float32 openArray variables that will be available in the code block as inputs
+- *output* same with outputs
+- *clientName* a string that will be jack client name, defaults to `defaultClientName()` which returns the
+  filename of the ececutable without extension. So if you run your program as `./foo.app` the client name will be `foo`.
+- *mainApp* a boolean that defauls to true. If it is set, `withJack` will set up a complete jack application including
+  a main loop that just sleeps, and handlers to quit the program if jack shuts down or a signal is received. If you
+  want your own main loop and use it as part of a larger application, you can set this to false and handle things yourself.
+
+```nim
+withJack a, b, "myJackClient", false:
+  discard
+
+# signal handler code here
+# Use `jacket` to register more jack callbacks here
+
+while true:
+  sleep(high(int))
+
+```
+
+Ring buffer
+-----------
+
+For thread communication, jill provides a Nimish wrap of the jack ring buffer. You can add elements in one thread and remove them in another, without locks.
+
+```nim
+import jill/ringbuffer
+
+var b = newRingBuffer[float32](1024)
+
+b.push(1.0)                  # buffer contains [1.0]
+echo $b.pop()                # 1.0, buffer is empty
+b.push(1.0)                  # buffer contains [1.0]
+var x:float32                # pre-existing variable to pop into
+b.pop(x)                     # buffer is empty
+echo $x                      # 1.0
+
+b.push([1.0'f32,2.0'f32])    # buffer contains [1.0, 2.0]
+echo $b.pop(2)               # @[1.0, 2.0, buffer is empty
+var s = newSeq[float32](2)   # pre-existing seq to pop into
+b.pop(s)                     # buffer is empty
+echo $s                      # @[1.0, 2.0]
+
+# cleanup is done by Nim
+
+```
 
 Design
 ------
@@ -120,6 +181,12 @@ This first version is limited in scope on purpose. There is interest in eventual
 - MIDI
 - Multithreading
 - Connections
+
+Changelog
+---------
+
+0.2.0 Add jack ringbuffer
+0.1.0 Inital release
 
 Thank you!
 ----------

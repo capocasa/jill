@@ -10,10 +10,11 @@ template defaultClientName*(): string =
 # internal helpers for the withjack macro
 
 template parsePorts(portDefinition: untyped, portType: string): seq[string] =
+  #echo portDefinition.kind
   case portDefinition.kind
   of nnkIdent:
     @[portDefinition.repr]
-  of nnkTupleConstr:
+  of nnkTupleConstr, nnkPar:
     var portNames:seq[string]
     for i,n in portDefinition:
       case n.kind
@@ -25,10 +26,15 @@ template parsePorts(portDefinition: untyped, portType: string): seq[string] =
   else:
     error(portType & " must be identifier or tuple representing names to be given to inputs")
 
-macro withJack*(input, output: untyped, clientName: string, mainApp: bool, body: untyped): untyped =
+macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
 
   # this is the pre processing stage to just get an array of strings
   # describing the inputs and outputs from the fancy Nim syntax
+
+  echo input.treeRepr
+  echo output.treeRepr
+  echo clientName.treeRepr
+  echo mainApp.treeRepr
 
   let
     inputNames = parsePorts(input, "input")
@@ -181,8 +187,8 @@ macro withJack*(input, output: untyped, clientName: string, mainApp: bool, body:
         clientName = `clientName`
         status: cint
         `identClient` = clientOpen(clientName, NullOption, status.addr)
-        sampleRate {.inject.}: NFrames
-        bufferSize {.inject.}: NFrames
+        rate {.inject.}: NFrames
+        frames {.inject.}: NFrames
 
       if `identClient`.isNil:
         debug "jack client open failed, status: $1" % $status
@@ -263,9 +269,9 @@ macro withJack*(input, output: untyped, clientName: string, mainApp: bool, body:
         debug "could not set xrun callback"
       if 0 != `identClient`.setPortRenameCallback(renamePort):
         debug "could not set port rename callback"
-      if 0 != `identClient`.setSampleRateCallback(changeSampleRate, sampleRate.addr):
+      if 0 != `identClient`.setSampleRateCallback(changeSampleRate, rate.addr):
         debug "could not set sample rate callback"
-      if 0 != `identClient`.setSampleRateCallback(changeBufferSize, bufferSize.addr):
+      if 0 != `identClient`.setSampleRateCallback(changeBufferSize, frames.addr):
         debug "could not set buffer size callback"
       if 0 != `identClient`.setPortConnectCallback(connectPort):
         debug "could not set port connect callback"
@@ -310,12 +316,12 @@ macro withJack*(input, output: untyped, clientName: string, mainApp: bool, body:
 
   # echo result.repr  
 
-template withJack*(input, output: untyped, clientName: string, body: untyped): untyped =
+template withJack*(input, output, clientName, body: untyped): untyped =
   withJack(input, output, clientName, true, body)
 
 template withJack*(input, output, body: untyped): untyped =
   withJack(input, output, defaultClientName(), true, body)
 
-template withJack*(output, body: untyped): untyped =
-  withJack((), output, defaultClientName(), true, body)
+#template withJack*(output, body: untyped): untyped =
+#  withJack((), output, defaultClientName(), true, body)
 
