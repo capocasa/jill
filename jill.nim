@@ -4,26 +4,31 @@ import jacket
 
 type JackBufferP = ptr UncheckedArray[DefaultAudioSample]
 
-macro withJack*(input, output, clientName, body: untyped): untyped =
-  
+template defaultClientName*(): string =
+  getAppFilename().lastPathPart.changeFileExt("")
+
+# internal helpers for the withjack macro
+
+template parsePorts(portDefinition: untyped, portType: string): seq[string] =
+  case portDefinition.kind
+  of nnkIdent:
+    @[portDefinition.repr]
+  of nnkTupleConstr:
+    var portNames:seq[string]
+    for i,n in portDefinition:
+      case n.kind
+      of nnkExprColonExpr:
+        error(portType & "s my not contain a colon")
+      else:
+        portNames.add n.repr
+    portNames
+  else:
+    error(portType & " must be identifier or tuple representing names to be given to inputs")
+
+macro withJack*(input, output: untyped, clientName: string, mainApp: bool, body: untyped): untyped =
+
   # this is the pre processing stage to just get an array of strings
   # describing the inputs and outputs from the fancy Nim syntax
-
-  template parsePorts(portDefinition: untyped, portType: string): seq[string] =
-    case portDefinition.kind
-    of nnkIdent:
-      @[portDefinition.repr]
-    of nnkTupleConstr:
-      var portNames:seq[string]
-      for i,n in portDefinition:
-        case n.kind
-        of nnkExprColonExpr:
-          error(portType & "s my not contain a colon")
-        else:
-          portNames.add n.repr
-      portNames
-    else:
-      error(portType & " must be identifier or tuple representing names to be given to inputs")
 
   let
     inputNames = parsePorts(input, "input")
@@ -181,7 +186,8 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
 
       if `identClient`.isNil:
         debug "jack client open failed, status: $1" % $status
-        quit 1
+        when `mainApp`:
+          quit 1
       debug "client $# connected" % clientName
 
       proc cleanup() {.cdecl.} =
@@ -191,15 +197,17 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
           `identClient`.clientClose()
           `identClient` = nil
 
-      proc signal(sig: cint) {.noconv.} =
-        debug "received signal: $#" % $sig
-        cleanup()
-        quit 0
+      when `mainApp`:
+        proc signal(sig: cint) {.noconv.} =
+          debug "received signal: $#" % $sig
+          cleanup()
+          quit 0
 
       proc shutdown(arg: pointer = nil) {.cdecl.} =
-        warn "jack server shutdown"
+        debug "jack server shutdown"
         cleanup()
-        quit 0
+        when `mainApp`:
+          quit 0
 
       proc connectPort(portIdA: PortId; portIdB: PortId; connect: cint; arg: pointer) {.cdecl.} =
         let portA = `identClient`.portById(portIdA)
@@ -243,11 +251,6 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         `processProcCall`
         return 0
 
-      when defined(windows):
-        setSignalProc(signal, SIGABRT, SIGINT, SIGTERM)
-      else:
-        setSignalProc(signal, SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM)
-
       `identClient`.onShutdown(shutdown)
       var processImplVar = processImpl
       if 0 != `identClient`.setProcessCallback(process, processImplVar.addr):
@@ -266,10 +269,17 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         debug "could not set buffer size callback"
       if 0 != `identClient`.setPortConnectCallback(connectPort):
         debug "could not set port connect callback"
+      
+      when `mainApp`:
+        when defined(windows):
+          setSignalProc(signal, SIGABRT, SIGINT, SIGTERM)
+        else:
+          setSignalProc(signal, SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM)
 
       if 0 != `identClient`.activate:
         debug "could not activate"
-        quit 1
+        when `mainApp`:
+          quit 1
 
       #[
       # defer autoconnect for now
@@ -292,19 +302,20 @@ macro withJack*(input, output, clientName, body: untyped): untyped =
         free(ports)
       ]#
 
-      while true:
-        sleep(high(int))
+      when `mainApp`:
+        while true:
+          sleep(high(int))
 
-      cleanup()
+        cleanup()
 
   # echo result.repr  
 
-template defaultClientName*(): string =
-  getAppFilename().lastPathPart.changeFileExt("")
+template withJack*(input, output: untyped, clientName: string, body: untyped): untyped =
+  withJack(input, output, clientName, true, body)
 
-template withJack*(output, clientName, body: untyped): untyped =
-  withJack((), output, clientName, body)
+template withJack*(input, output, body: untyped): untyped =
+  withJack(input, output, defaultClientName(), true, body)
 
 template withJack*(output, body: untyped): untyped =
-  withJack((), output, defaultClientName(), body)
+  withJack((), output, defaultClientName(), true, body)
 
