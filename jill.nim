@@ -31,10 +31,12 @@ macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
   # this is the pre processing stage to just get an array of strings
   # describing the inputs and outputs from the fancy Nim syntax
 
+  #[
   echo input.treeRepr
   echo output.treeRepr
   echo clientName.treeRepr
   echo mainApp.treeRepr
+  ]#
 
   let
     inputNames = parsePorts(input, "input")
