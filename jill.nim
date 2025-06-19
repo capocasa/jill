@@ -1,5 +1,5 @@
 import std/[strutils,macros,os,logging]
-import jill/signal
+import jill/os
 import jacket
 
 type JackBufferP = ptr UncheckedArray[DefaultAudioSample]

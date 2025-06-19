@@ -185,8 +185,11 @@ This first version is limited in scope on purpose. There is interest in eventual
 Changelog
 ---------
 
-0.2.0 Add jack ringbuffer
-0.1.0 Inital release
+```
+0.2.1  Expose jack client, ringbuffer iteration
+0.2.0  Add jack ringbuffer
+0.1.0  Inital release
+```
 
 Thank you!
 ----------
