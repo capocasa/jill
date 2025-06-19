@@ -188,7 +188,7 @@ macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
       var
         clientName = `clientName`
         status: cint
-        `identClient` = clientOpen(clientName, NullOption, status.addr)
+        `identClient` {.inject.} = clientOpen(clientName, NullOption, status.addr)
         rate {.inject.}: NFrames
         frames {.inject.}: NFrames
 
