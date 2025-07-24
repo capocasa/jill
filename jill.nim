@@ -26,17 +26,98 @@ template parsePorts(portDefinition: untyped, portType: string): seq[string] =
   else:
     error(portType & " must be identifier or tuple representing names to be given to inputs")
 
-macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
+macro withJack*(args: varargs[untyped]): untyped =
 
   # this is the pre processing stage to just get an array of strings
   # describing the inputs and outputs from the fancy Nim syntax
 
-  #[
-  echo input.treeRepr
-  echo output.treeRepr
-  echo clientName.treeRepr
-  echo mainApp.treeRepr
-  ]#
+  # Parse varargs to extract parameters with defaults, supporting both positional and named args
+  var
+    input, output, clientName, client, mainApp, body: NimNode
+  
+  for i, arg in args:
+
+    case arg.kind:
+    of nnkPar:
+      # positional
+      case i:
+      of 0:
+        output = arg
+      of 1:
+        input = arg
+      of 2:
+        clientName = arg
+      of 3:
+        client = arg
+      of 4:
+        mainApp = arg
+      else:
+        error("Too many positional arguments")
+    of nnkExprEqExpr:
+      # Named argument: name: value
+      let name = arg[0]
+      let value = arg[1]
+      case $name:
+      of "output":
+        if not output.isNil:
+          error("output parameter set both positionally and as named argument")
+        output = value
+      of "input":
+        if not input.isNil:
+          error("input parameter set both positionally and as named argument")
+        input = value
+      of "client":
+        if not clientName.isNil:
+          error("clientName parameter set both positionally and as named argument")
+        clientName = value
+      of "clientName":
+        if not clientName.isNil:
+          error("clientName parameter set both positionally and as named argument")
+        clientName = value
+      of "mainApp":
+        if not mainApp.isNil:
+          error("mainApp parameter set both positionally and as named argument")
+        mainApp = value
+      else:
+        error("Unknown parameter: " & $name)
+    of nnkStmtList:
+      if i == args.len-1:
+        body = arg
+      else:
+        error("withJack body should come at the end")
+    else:
+      error("Unexpected withJack parameter: " & $arg.repr)
+
+  if output.isNil and input.isNil:
+    error("Need input or output")
+  
+  # in order to refer to the same identifier in different code snippets
+  # it needs to be generated here and injected everywhere it is needed
+  # otherwise 'foo' is not the same as 'foo' in different AST snippets
+  # set these early so they are available
+  let
+    identStatus = ident("status")
+    identClient = ident("client")
+    identNframes = ident("nframes")
+    identProc = ident("processImpl")
+    identVarProc = ident("processImplVar")
+    identArg = ident("arg")
+
+  # Now set the default values
+  # they might need the ident vars above
+
+  if output.isNil:
+    output = quote: ()
+  if input.isNil:
+    input= quote: ()
+  if clientName.isNil:
+    clientName = quote: defaultClientName()
+  if client.isNil:
+    client = quote: clientOpen(`clientName`, NullOption, `identStatus`.addr)
+  if mainApp.isNil:
+    mainApp = newLit(false)
+  if body.isNil:
+    error("withJack requires a body block")
 
   let
     inputNames = parsePorts(input, "input")
@@ -52,15 +133,6 @@ macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
   # - A call to that procedure passing the correct input and output buffers
   #   this happens inside the jack process callback
 
-  let
-    # in order to refer to the same identifier in different code snippets
-    # it needs to be generated here and injected everywhere it is needed
-    # otherwise 'foo' is not the same as 'foo' in different AST snippets
-    identClient = ident("client")
-    identNframes = ident("nframes")
-    identProc = ident("processImpl")
-    identVarProc = ident("processImplVar")
-    identArg = ident("arg")
 
   var
     # the four Nim AST snippets we will make looping over the port names
@@ -187,13 +259,13 @@ macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
       const size = sizeof(DefaultAudioSample)
       var
         clientName = `clientName`
-        status: cint
-        `identClient` {.inject.} = clientOpen(clientName, NullOption, status.addr)
+        `identStatus`: cint
+        `identClient` {.inject.} = `client`
         rate {.inject.}: NFrames
         frames {.inject.}: NFrames
 
       if `identClient`.isNil:
-        debug "jack client open failed, status: $1" % $status
+        debug "jack client open failed, status: $1" % $`identStatus`
         when `mainApp`:
           quit 1
       debug "client $# connected" % clientName
@@ -289,27 +361,6 @@ macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
         when `mainApp`:
           quit 1
 
-      #[
-      # defer autoconnect for now
-      block:
-        let ports = `identClient`.getPorts(nil, nil, PortIsPhysical or PortIsOutput)
-        if ports.isNil:
-          debug "no input ports"
-          break
-        if 0 != `identClient`.connect(ports[0], inputPort.portName):
-          debug "could not connect input ports"
-        free(ports)
-
-      block:
-        let ports = `identClient`.getPorts(nil, nil, PortIsPhysical or PortIsInput)
-        if ports.isNil:
-          debug "no output ports"
-          break
-        if 0 != `identClient`.connect(outputPort.portName, ports[0]):
-          debug "could not connect input ports"
-        free(ports)
-      ]#
-
       when `mainApp`:
         while true:
           sleep(high(int))
@@ -318,12 +369,4 @@ macro withJack*(input, output, clientName, mainApp, body: untyped): untyped =
 
   # echo result.repr  
 
-template withJack*(input, output, clientName, body: untyped): untyped =
-  withJack(input, output, clientName, true, body)
-
-template withJack*(input, output, body: untyped): untyped =
-  withJack(input, output, defaultClientName(), true, body)
-
-#template withJack*(output, body: untyped): untyped =
-#  withJack((), output, defaultClientName(), true, body)
 
