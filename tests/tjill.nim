@@ -58,34 +58,37 @@ suite "Jill":
     assert testClient.deactivate() == 0
     discard
 
-  test "one cycle of stereo input and output":
+  test "one cycle of stereo audio input and output":
     var
-      testeeIn1, testeeIn2: array[64, float32]
-    withJack audioOut=(out1, out2), audioIn=(in1, in2), mainApp=false, clientName="testee":
+      testee1In1, testee1In2: array[64, float32]
+    withJack audioOut=(out1, out2), audioIn=(in1, in2), mainApp=false, clientName="testee1":
       for i in 0..in1.len-1:
-        testeeIn1[i] = in1[i]
-        testeeIn2[i] = in2[i]
+        testee1In1[i] = in1[i]
+        testee1In2[i] = in2[i]
 
         # a different test signal
         out1[i] = i.float32 * 0.001
         out2[i] = 1 - i.float32 * 0.001
 
-    testClient.connect("tester:out1", "testee:in1")
-    testClient.connect("tester:out2", "testee:in2")
-    testClient.connect("testee:out1", "tester:in1")
-    testClient.connect("testee:out2", "tester:in2")
+    testClient.connect("tester:out1", "testee1:in1")
+    testClient.connect("tester:out2", "testee1:in2")
+    testClient.connect("testee1:out1", "tester:in1")
+    testClient.connect("testee1:out2", "tester:in2")
     sleep 10  # let it run a few times it's the same data every cycle anyway
-    testClient.disconnect("tester:out1", "testee:in1")
-    testClient.disconnect("tester:out2", "testee:in2")
-    testClient.disconnect("testee:out1", "tester:in1")
-    testClient.disconnect("testee:out2", "tester:in2")
+    testClient.disconnect("tester:out1", "testee1:in1")
+    testClient.disconnect("tester:out2", "testee1:in2")
+    testClient.disconnect("testee1:out1", "tester:in1")
+    testClient.disconnect("testee1:out2", "tester:in2")
 
     for i in 0 ..< 64:
-      check almostEqual(testeeIn1[i], i.float32 * 0.01, 6)
-      check almostEqual(testeeIn2[i], 1 - i.float32 * 0.01, 6)
+      check almostEqual(testee1In1[i], i.float32 * 0.01, 6)
+      check almostEqual(testee1In2[i], 1 - i.float32 * 0.01, 6)
       check almostEqual(testerIn1[i], i.float32 * 0.001, 6)
       check almostEqual(testerIn2[i], 1 - i.float32 * 0.001, 6)
     
 
 
+  #test "one cycle of MIDI in and out":
+  #  withJack midiOut=(midiOut), midiIn=(midiIn), mainApp=false, clientName="testee2":
+  #    discard
 

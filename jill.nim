@@ -4,7 +4,7 @@ import jacket
 
 type
   JackBufferP = ptr UncheckedArray[DefaultAudioSample]
-  MidiBuffer = distinct pointer
+  MidiBuffer = pointer
 
 template defaultClientName*(): string =
   getAppFilename().lastPathPart.changeFileExt("")
@@ -102,7 +102,7 @@ macro withJack*(args: varargs[untyped]): untyped =
     else:
       error("Unexpected withJack parameter: " & $arg.repr)
 
-  if audioOut.isNil and audioIn.isNil:
+  if audioOut.isNil and audioIn.isNil and midiin.isNil and midiOut.isNil:
     error("Need at least one output or input")
   
   # in order to refer to the same identifier in different code snippets
@@ -189,10 +189,6 @@ macro withJack*(args: varargs[untyped]): untyped =
       let
         identBuffer = ident(portName)
         identPort = ident(portName & "Port")
-        identBufferType = case portType:
-          of JackDefaultAudioType: getType(bind(JackBufferP))
-          of JackDefaultMidiType:  getType(bind(MidiBuffer))
-          else: error("internal error, invalid buffer type")
       # make sure a jack port gets registered for input or output
       registerPorts.add quote do:
         let `identPort` = `identClient`.portRegister(`portName`, `portType`, `portIoFlag`, 0)
@@ -200,15 +196,16 @@ macro withJack*(args: varargs[untyped]): untyped =
           debug "could not register port '$#'" % `portName`
           quit 1
 
-      # have a buffer defined in the process proc
   
-      defineBuffers.add quote do:
-        let `identBuffer` = cast[`identBufferType`](portGetBuffer(`identPort`, `identNframes`))
-      # have an openArray parameter in the processInput proc, writable only
-      # for outputs, for Nimish but zero-copy input and output
-
+      var paramCall:NimNode
       case portType:
         of JackDefaultAudioType:
+          # have a buffer defined in the process proc
+          defineBuffers.add quote do:
+            let `identBuffer` = cast[JackBufferP](portGetBuffer(`identPort`, `identNframes`))
+
+          # have an openArray parameter in the processInput proc, writable only
+          # for outputs, for Nimish but zero-copy input and output
           case portIoFlag:
           of PortIsOutput:
             audioOutDef.add ident(portName)
@@ -216,33 +213,45 @@ macro withJack*(args: varargs[untyped]): untyped =
             audioInDef.add ident(portName)
           else:
             error "internal error, invalid portIoFlag"
+
+          # now add to the outputs for the procedure call with appropriate length
+          paramCall = nnkCall.newTree
+          paramCall.add ident("toOpenArray")
+          paramCall.add ident(portName)
+          paramCall.add newIntLitNode(0)
+          var infix = nnkInfix.newTree
+          infix.add ident("-")
+          var intified = nnkCall.newTree
+          intified.add ident("int")
+          intified.add identNframes
+          infix.add intified
+          infix.add newIntLitNode(1)
+          paramCall.add infix
+
+
         of JackDefaultMidiType:
           case portIoFlag:
           of PortIsOutput:
             midiOutDef.add ident(portName)
+            defineBuffers.add quote do:
+              var `identBuffer` = cast[MidiBuffer](portGetBuffer(`identPort`, `identNframes`))
           of PortIsInput:
             midiInDef.add ident(portName)
+            defineBuffers.add quote do:
+              let `identBuffer` = cast[MidiBuffer](portGetBuffer(`identPort`, `identNframes`))
           else:
             error "internal error, invalid portIoFlag"
+          
+          # midi only passes the identifier, no toOpenArray
+          paramCall = ident(portName)
+
         else:
           error "internal error, invalid portType"
- 
-      # now add to the outputs for the procedure call with appropriate length
-      var paramCall = nnkCall.newTree
-      paramCall.add ident("toOpenArray")
-      paramCall.add ident(portName)
-      paramCall.add newIntLitNode(0)
-      var infix = nnkInfix.newTree
-      infix.add ident("-")
-      var intified = nnkCall.newTree
-      intified.add ident("int")
-      intified.add identNframes
-      infix.add intified
-      infix.add newIntLitNode(1)
-      paramCall.add infix
 
       processProcCall.add paramCall
-  
+ 
+  echo defineBuffers.repr
+
   # add var openArray[float32] type to audio output parameters
   audioOutDef.add nnkVarTy.newTree nnkBracketExpr.newTree(ident("openArray"), ident("float32"))
   audioOutDef.add newEmptyNode()
@@ -252,11 +261,11 @@ macro withJack*(args: varargs[untyped]): untyped =
   audioInDef.add newEmptyNode()
 
   # add var openArray[MidiEvent] type to MIDI output parameters
-  midiOutDef.add nnkVarTy.newTree nnkBracketExpr.newTree(ident("openArray"), ident("MidiEvent"))
+  midiOutDef.add nnkVarTy.newTree getType(bind(MidiBuffer))
   midiOutDef.add newEmptyNode()
   
   # add openArray[MidiEvent] type to MIDI input parameters
-  midiInDef.add nnkBracketExpr.newTree(ident("openArray"), ident("MidiEvent"))
+  midiInDef.add getType(bind(MidiBuffer))
   midiInDef.add newEmptyNode()
 
   # add inputs and outputs to parameters
