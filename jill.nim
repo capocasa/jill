@@ -2,14 +2,16 @@ import std/[strutils,macros,os,logging]
 import jill/os
 import jacket
 
-type JackBufferP = ptr UncheckedArray[DefaultAudioSample]
+type
+  JackBufferP = ptr UncheckedArray[DefaultAudioSample]
+  MidiBuffer = distinct pointer
 
 template defaultClientName*(): string =
   getAppFilename().lastPathPart.changeFileExt("")
 
 # internal helpers for the withjack macro
 
-template parsePorts(portDefinition: untyped, portType: string): seq[string] =
+template parsePorts(portDefinition: untyped, paramName: string): seq[string] =
   #echo portDefinition.kind
   case portDefinition.kind
   of nnkIdent:
@@ -19,12 +21,12 @@ template parsePorts(portDefinition: untyped, portType: string): seq[string] =
     for i,n in portDefinition:
       case n.kind
       of nnkExprColonExpr:
-        error(portType & "s my not contain a colon")
+        error(paramName & " may not contain a colon")
       else:
         portNames.add n.repr
     portNames
   else:
-    error(portType & " must be identifier or tuple representing names to be given to inputs")
+    error(paramName & " must be identifier or tuple representing names to be given to inputs")
 
 macro withJack*(args: varargs[untyped]): untyped =
 
@@ -33,7 +35,7 @@ macro withJack*(args: varargs[untyped]): untyped =
 
   # Parse varargs to extract parameters with defaults, supporting both positional and named args
   var
-    audioIn, audioOut, clientName, client, mainApp, body: NimNode
+    audioOut, audioIn, midiOut, midiIn, clientName, client, mainApp, body: NimNode
   
   for i, arg in args:
 
@@ -45,6 +47,10 @@ macro withJack*(args: varargs[untyped]): untyped =
         audioOut = arg
       of 1:
         audioIn = arg
+      of 2:
+        midiOut = arg
+      of 3:
+        midiIn = arg
       of 4:
         clientName = arg
       of 5:
@@ -60,23 +66,31 @@ macro withJack*(args: varargs[untyped]): untyped =
       case $name:
       of "audioOut":
         if not audioOut.isNil:
-          error("output parameter set both positionally and as named argument")
+          error($name & " already set")
         audioOut = value
       of "audioIn":
         if not audioIn.isNil:
-          error("audioIn parameter set both positionally and as named argument")
+          error($name & " already set")
         audioIn = value
+      of "midiOut":
+        if not midiOut.isNil:
+          error($name & " already set")
+        midiOut = value
+      of "midiIn":
+        if not midiIn.isNil:
+          error($name & " already set")
+        midiIn = value
       of "client":
         if not clientName.isNil:
-          error("clientName parameter set both positionally and as named argument")
+          error($name & " already set")
         clientName = value
       of "clientName":
         if not clientName.isNil:
-          error("clientName parameter set both positionally and as named argument")
+          error($name & " already set")
         clientName = value
       of "mainApp":
         if not mainApp.isNil:
-          error("mainApp parameter set both positionally and as named argument")
+          error($name & "already set")
         mainApp = value
       else:
         error("Unknown parameter: " & $name)
@@ -99,17 +113,23 @@ macro withJack*(args: varargs[untyped]): untyped =
     identStatus = ident("status")
     identClient = ident("client")
     identNframes = ident("nframes")
-    identProc = ident("processImpl")
-    identVarProc = ident("processImplVar")
+    identProcessImpl = ident("processImpl")
+    identProcessImplVar = ident("processImplVar")
     identArg = ident("arg")
 
   # Now set the default values
   # they might need the ident vars above
 
-  if audioIn.isNil:
-    audioIn = quote: ()
   if audioOut.isNil:
     audioOut = quote: ()
+  if audioIn.isNil:
+    audioIn = quote: ()
+  if midiOut.isNil:
+    midiOut = quote: ()
+  if midiIn.isNil:
+    midiIn = quote: ()
+  if midiIn.isNil:
+    midiIn = quote: ()
   if clientName.isNil:
     clientName = quote: defaultClientName()
   if client.isNil:
@@ -120,8 +140,10 @@ macro withJack*(args: varargs[untyped]): untyped =
     error("withJack requires a body block")
 
   let
-    audioOutNames = parsePorts(audioOut, "output")
-    audioInNames = parsePorts(audioIn, "input")
+    audioOutNames = parsePorts(audioOut, "audioOut")
+    audioInNames = parsePorts(audioIn, "audioIn")
+    midiOutNames = parsePorts(midiOut, "midiOut")
+    midiInNames = parsePorts(midiIn, "midiIn")
 
   # Now we will loop over the input and output names in order to generate four
   # different code snippets to do the work of having a jack client.
@@ -141,8 +163,10 @@ macro withJack*(args: varargs[untyped]): untyped =
     defineBuffers = newStmtList()
     
     # for procedure parameters we have two snippets, one for input and one for output
-    audioInDef = nnkIdentDefs.newTree()
     audioOutDef= nnkIdentDefs.newTree()
+    audioInDef = nnkIdentDefs.newTree()
+    midiOutDef= nnkIdentDefs.newTree()
+    midiInDef = nnkIdentDefs.newTree()
 
     # a snippet to dynamically cast the procedure from a pointer
     # (required to support the closure calling convention)
@@ -151,11 +175,13 @@ macro withJack*(args: varargs[untyped]): untyped =
     # and a snippets for the procedure call
     processProcCall = nnkCall.newTree()
   
-  processProcCall.add(identVarProc)
+  processProcCall.add(identProcessImplVar)
 
-  for portType, portNames in @[
-    ("input", audioInNames),
-    ("output", audioOutNames)
+  for portType, portIoFlag, portNames in @[
+    (JackDefaultAudioType, PortIsOutput, audioOutNames),
+    (JackDefaultAudioType, PortIsInput, audioInNames),
+    (JackDefaultMidiType, PortIsOutput, midiOutNames),
+    (JackDefaultMidiType, PortIsInput, midiInNames)
   ].items():
     for portName in portNames:
 
@@ -163,26 +189,43 @@ macro withJack*(args: varargs[untyped]): untyped =
       let
         identBuffer = ident(portName)
         identPort = ident(portName & "Port")
-        identPortTypeFlag = if portType=="input": PortIsInput else: PortIsOutput
-
+        identBufferType = case portType:
+          of JackDefaultAudioType: getType(bind(JackBufferP))
+          of JackDefaultMidiType:  getType(bind(MidiBuffer))
+          else: error("internal error, invalid buffer type")
       # make sure a jack port gets registered for input or output
       registerPorts.add quote do:
-        let `identPort` = `identClient`.portRegister(`portName`, JackDefaultAudioType, `identPortTypeFlag`, 0)
+        let `identPort` = `identClient`.portRegister(`portName`, `portType`, `portIoFlag`, 0)
         if `identPort`.isNil:
           debug "could not register port '$#'" % `portName`
           quit 1
 
       # have a buffer defined in the process proc
-      defineBuffers.add quote do:
-        let `identBuffer` = cast[JackBufferP](portGetBuffer(`identPort`, `identNframes`))
   
+      defineBuffers.add quote do:
+        let `identBuffer` = cast[`identBufferType`](portGetBuffer(`identPort`, `identNframes`))
       # have an openArray parameter in the processInput proc, writable only
       # for outputs, for Nimish but zero-copy input and output
 
-      if portType == "input":
-        audioInDef.add ident(portName)
-      else:
-        audioOutDef.add ident(portName)
+      case portType:
+        of JackDefaultAudioType:
+          case portIoFlag:
+          of PortIsOutput:
+            audioOutDef.add ident(portName)
+          of PortIsInput:
+            audioInDef.add ident(portName)
+          else:
+            error "internal error, invalid portIoFlag"
+        of JackDefaultMidiType:
+          case portIoFlag:
+          of PortIsOutput:
+            midiOutDef.add ident(portName)
+          of PortIsInput:
+            midiInDef.add ident(portName)
+          else:
+            error "internal error, invalid portIoFlag"
+        else:
+          error "internal error, invalid portType"
  
       # now add to the outputs for the procedure call with appropriate length
       var paramCall = nnkCall.newTree
@@ -199,26 +242,38 @@ macro withJack*(args: varargs[untyped]): untyped =
       paramCall.add infix
 
       processProcCall.add paramCall
-
-  # add openArray[float32] type to input parameters
-  audioInDef.add nnkBracketExpr.newTree(ident("openArray"), ident("float32"))
-  audioInDef.add newEmptyNode()
-
-  # add var openArray[float32] type to output parameters
+  
+  # add var openArray[float32] type to audio output parameters
   audioOutDef.add nnkVarTy.newTree nnkBracketExpr.newTree(ident("openArray"), ident("float32"))
   audioOutDef.add newEmptyNode()
 
+  # add openArray[float32] type to audio input parameters
+  audioInDef.add nnkBracketExpr.newTree(ident("openArray"), ident("float32"))
+  audioInDef.add newEmptyNode()
+
+  # add var openArray[MidiEvent] type to MIDI output parameters
+  midiOutDef.add nnkVarTy.newTree nnkBracketExpr.newTree(ident("openArray"), ident("MidiEvent"))
+  midiOutDef.add newEmptyNode()
+  
+  # add openArray[MidiEvent] type to MIDI input parameters
+  midiInDef.add nnkBracketExpr.newTree(ident("openArray"), ident("MidiEvent"))
+  midiInDef.add newEmptyNode()
+
   # add inputs and outputs to parameters
   var params = nnkFormalParams.newTree(newEmptyNode())
-  if audioInNames.len > 0:
-    params.add(audioInDef)
   if audioOutNames.len > 0:
     params.add(audioOutDef)
+  if audioInNames.len > 0:
+    params.add(audioInDef)
+  if midiOutNames.len > 0:
+    params.add(midiOutDef)
+  if midiInNames.len > 0:
+    params.add(midiInDef)
   
   # this results in the following procedure definition
-  # proc processImpl(input1, input2, ...: openArray[float32], outpu1, output2, ...: var openArray[float32])
+  # proc processImpl(output1, output2, ...: var openArray[float32], input1, input1, ...: openArray[float32])
   var processProcDef = nnkProcDef.newTree
-  processProcDef.add identProc
+  processProcDef.add identProcessImpl
   processProcDef.add newEmptyNode()
   processProcDef.add newEmptyNode()
   processProcDef.add params
@@ -231,7 +286,7 @@ macro withJack*(args: varargs[untyped]): untyped =
   # to make the process function support closure
 
   block:  # shorter var names in own scope
-    var audioInDef = nnkIdentDefs.newTree
+    var indef = nnkIdentDefs.newTree
     var bracket = nnkBracketExpr.newTree
     var castdef = nnkCast.newTree
     var ptrdef = nnkPtrTy.newTree
@@ -246,10 +301,10 @@ macro withJack*(args: varargs[untyped]): untyped =
     castdef.add ptrdef
     castdef.add identArg
     bracket.add castdef
-    audioInDef.add identVarProc
-    audioInDef.add newEmptyNode()
-    audioInDef.add bracket
-    processProcCast.add audioInDef
+    indef.add identProcessImplVar
+    indef.add newEmptyNode()
+    indef.add bracket
+    processProcCast.add indef 
 
   # Now comes the main macro body, which is the bulk of the jack
   # implementation as a big quote do block. Static code changes
