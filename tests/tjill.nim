@@ -61,7 +61,7 @@ suite "Jill":
   test "one cycle of stereo input and output":
     var
       testeeIn1, testeeIn2: array[64, float32]
-    withJack output=(out1, out2), input=(in1, in2), mainApp=false, clientName="testee":
+    withJack audioOut=(out1, out2), audioIn=(in1, in2), mainApp=false, clientName="testee":
       for i in 0..in1.len-1:
         testeeIn1[i] = in1[i]
         testeeIn2[i] = in2[i]
