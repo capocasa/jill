@@ -1,6 +1,7 @@
 import std/[unittest,math]
 import tests/mock_jacket as jacket
 import ../jill
+import ../jill/midi
 
 suite "Jill":
 
@@ -57,11 +58,46 @@ suite "Jill":
       check almostEqual(out1Data[i], i.float32 * 0.001, 6)
       check almostEqual(out2Data[i], 1 - i.float32 * 0.001, 6)
 
-  test "midi ports creation":
-    # Test that withJack can create MIDI ports without errors
-    withJack midiOut=(mo), midiIn=(mi):
-      discard
+  test "midi sending and receiving":
+    var receivedEvents: seq[tuple[time: NFrames, data: seq[byte]]] = @[]
     
-    # The test passes if the macro expansion completes without errors
-    # MIDI functionality will be implemented later
-    check true
+    # Test that withJack can create MIDI ports and handle MIDI events
+    withJack midiOut=(mo), midiIn=(mi), mainApp=false:
+      # Read incoming MIDI events
+      for event in mi.read():
+        var eventData = newSeq[byte](event.size)
+        for i in 0..<event.size:
+          eventData[i] = event.buffer[i]
+        receivedEvents.add((time: event.time, data: eventData))
+      
+      # Send MIDI note on message (Note C4, velocity 64)
+      let noteOnMsg = [0x90.byte, 60, 64]  # MIDI note on, channel 0, note 60, velocity 64
+      mo.send(32, noteOnMsg)
+      
+      # Send MIDI note off message (Note C4)  
+      let noteOffMsg = [0x80.byte, 60, 0]  # MIDI note off, channel 0, note 60, velocity 0
+      mo.send(48, noteOffMsg)
+    
+    # Set up input MIDI data for the process callback to receive
+    let miPort = cast[jacket.Port](2)  # mi port is likely port ID 2
+    jacket.setMockMidiEvent(miPort, 16, [0x91.byte, 67, 127])  # Note on G4, velocity 127
+    jacket.setMockMidiEvent(miPort, 32, [0x81.byte, 67, 0])    # Note off G4
+    
+    # Trigger the process callback
+    discard jacket.simulateProcessCycle(64)
+    
+    # Verify we received the input MIDI events
+    check receivedEvents.len == 2
+    check receivedEvents[0].time == 16
+    check receivedEvents[0].data == @[0x91.byte, 67, 127]
+    check receivedEvents[1].time == 32  
+    check receivedEvents[1].data == @[0x81.byte, 67, 0]
+    
+    # Verify we sent the output MIDI events
+    let moPort = cast[jacket.Port](1)  # mo port is likely port ID 1
+    let sentEvents = jacket.getMockMidiEvents(moPort)
+    check sentEvents.len == 2
+    check sentEvents[0].time == 32
+    check sentEvents[0].data == @[0x90.byte, 60, 64]
+    check sentEvents[1].time == 48
+    check sentEvents[1].data == @[0x80.byte, 60, 0]

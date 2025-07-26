@@ -4,7 +4,7 @@ import jacket
 
 type
   JackBufferP = ptr UncheckedArray[DefaultAudioSample]
-  MidiBuffer = pointer
+  MidiBuffer* = pointer
 
 template defaultClientName*(): string =
   getAppFilename().lastPathPart.changeFileExt("")
@@ -313,7 +313,7 @@ macro withJack*(args: varargs[untyped]): untyped =
     indef.add identProcessImplVar
     indef.add newEmptyNode()
     indef.add bracket
-    processProcCast.add indef 
+    processProcCast.add indef
 
   # Now comes the main macro body, which is the bulk of the jack
   # implementation as a big quote do block. Static code changes
